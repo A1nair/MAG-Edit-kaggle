@@ -29,19 +29,22 @@ if torch.cuda.is_available():
 else:
     device = torch.device('cpu')
 
-# 多卡支持：使用 device_map 分配到多个GPU
+# 多卡支持：手动分配模型组件到不同GPU
 if torch.cuda.device_count() > 1:
     ldm_stable = StableDiffusionPipeline.from_pretrained(
         "/root/.cache/huggingface/diffusers/models--CompVis--stable-diffusion-v1-4/snapshots/133a221b8aa7292a167afc5127cb63fb5005638b",
         scheduler=scheduler,
-        low_cpu_mem_usage=True,
-        device_map={
-            "unet": "cuda:0",
-            "text_encoder": "cuda:1",
-            "vae": "cuda:0",
-            "safety_checker": "cuda:1"
-        }
+        low_cpu_mem_usage=True
     )
+    # 手动分配到不同GPU - UNet最大，放cuda:1；其他放cuda:0
+    ldm_stable.text_encoder = ldm_stable.text_encoder.to("cuda:0")
+    ldm_stable.vae = ldm_stable.vae.to("cuda:0")
+    ldm_stable.unet = ldm_stable.unet.to("cuda:1")
+    if ldm_stable.safety_checker is not None:
+        ldm_stable.safety_checker = ldm_stable.safety_checker.to("cuda:0")
+    # 启用UNet梯度检查点减少显存
+    ldm_stable.unet.enable_gradient_checkpointing()
+    device = torch.device('cuda:0')  # 主设备
 else:
     ldm_stable = StableDiffusionPipeline.from_pretrained(
         "/root/.cache/huggingface/diffusers/models--CompVis--stable-diffusion-v1-4/snapshots/133a221b8aa7292a167afc5127cb63fb5005638b",
@@ -54,9 +57,6 @@ else:
 ldm_stable.enable_attention_slicing()
 ldm_stable.enable_vae_slicing()
 
-# 如果有多个GPU，启用GPU分布
-if torch.cuda.device_count() > 1:
-    pass
 try:
     ldm_stable.disable_xformers_memory_efficient_attention()
 except AttributeError:
@@ -604,13 +604,25 @@ class NullInversion:
         return next_sample
     
     def get_noise_pred_single(self, latents, t, context):
+        # 确保latents和context在UNet所在的设备上
+        unet_device = next(self.model.unet.parameters()).device
+        latents = latents.to(unet_device)
+        context = context.to(unet_device)
+        if isinstance(t, torch.Tensor):
+            t = t.to(unet_device)
         noise_pred = self.model.unet(latents, t, encoder_hidden_states=context)["sample"]
         return noise_pred
 
     def get_noise_pred(self, latents, t, is_forward=True, context=None):
+        # 确保在UNet所在的设备上
+        unet_device = next(self.model.unet.parameters()).device
+        latents = latents.to(unet_device)
         latents_input = torch.cat([latents] * 2)
         if context is None:
             context = self.context
+        context = context.to(unet_device)
+        if isinstance(t, torch.Tensor):
+            t = t.to(unet_device)
         guidance_scale = 1 if is_forward else GUIDANCE_SCALE
         noise_pred = self.model.unet(latents_input, t, encoder_hidden_states=context)["sample"]
         noise_pred_uncond, noise_prediction_text = noise_pred.chunk(2)
@@ -623,6 +635,9 @@ class NullInversion:
 
     @torch.no_grad()
     def latent2image(self, latents, return_type='np'):
+        # 确保latents在VAE所在的设备上
+        vae_device = next(self.model.vae.parameters()).device
+        latents = latents.to(vae_device)
         latents = 1 / 0.18215 * latents.detach()
         image = self.model.vae.decode(latents)['sample']
         if return_type == 'np':
@@ -633,14 +648,16 @@ class NullInversion:
 
     @torch.no_grad()
     def image2latent(self, image):
+        # 获取VAE所在的设备
+        vae_device = next(self.model.vae.parameters()).device
         with torch.no_grad():
             if type(image) is Image:
                 image = np.array(image)
             if type(image) is torch.Tensor and image.dim() == 4:
-                latents = image
+                latents = image.to(vae_device)
             else:
                 image = torch.from_numpy(image).float() / 127.5 - 1
-                image = image.permute(2, 0, 1).unsqueeze(0).to(device)
+                image = image.permute(2, 0, 1).unsqueeze(0).to(vae_device)
                 latents = self.model.vae.encode(image)['latent_dist'].mean
                 latents = latents * 0.18215
         return latents
@@ -651,7 +668,9 @@ class NullInversion:
             [""], padding="max_length", max_length=self.model.tokenizer.model_max_length,
             return_tensors="pt"
         )
-        uncond_embeddings = self.model.text_encoder(uncond_input.input_ids.to(self.model.device))[0]
+        # 获取text_encoder所在的设备
+        text_encoder_device = next(self.model.text_encoder.parameters()).device
+        uncond_embeddings = self.model.text_encoder(uncond_input.input_ids.to(text_encoder_device))[0]
         text_input = self.model.tokenizer(
             [prompt],
             padding="max_length",
@@ -659,7 +678,7 @@ class NullInversion:
             truncation=True,
             return_tensors="pt",
         )
-        text_embeddings = self.model.text_encoder(text_input.input_ids.to(self.model.device))[0]
+        text_embeddings = self.model.text_encoder(text_input.input_ids.to(text_encoder_device))[0]
         self.context = torch.cat([uncond_embeddings, text_embeddings])
         self.prompt = prompt
 
