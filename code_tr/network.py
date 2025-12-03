@@ -22,8 +22,18 @@ NUM_DDIM_STEPS = 50
 GUIDANCE_SCALE = 7.5
 MAX_NUM_WORDS = 77
 
-device = torch.device('cuda:0') if torch.cuda.is_available() else torch.device('cpu')
-ldm_stable = StableDiffusionPipeline.from_pretrained("./model/sdm-1.4", scheduler=scheduler).to(device)
+# 检测可用GPU数量
+if torch.cuda.is_available():
+    num_gpus = torch.cuda.device_count()
+    device = torch.device('cuda:0')
+else:
+    device = torch.device('cpu')
+    
+ldm_stable = StableDiffusionPipeline.from_pretrained("/root/.cache/huggingface/diffusers/models--CompVis--stable-diffusion-v1-4/snapshots/133a221b8aa7292a167afc5127cb63fb5005638b", scheduler=scheduler, low_cpu_mem_usage=True, device_map="auto")
+
+# 如果有多个GPU，启用GPU分布
+if torch.cuda.device_count() > 1:
+    pass
 try:
     ldm_stable.disable_xformers_memory_efficient_attention()
 except AttributeError:
@@ -940,4 +950,3 @@ def text2image_ldm_stable_TR(
         
     
     
-
