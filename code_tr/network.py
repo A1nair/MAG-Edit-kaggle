@@ -34,6 +34,7 @@ if torch.cuda.device_count() > 1:
     ldm_stable = StableDiffusionPipeline.from_pretrained(
         "/root/.cache/huggingface/diffusers/models--CompVis--stable-diffusion-v1-4/snapshots/133a221b8aa7292a167afc5127cb63fb5005638b",
         scheduler=scheduler,
+        low_cpu_mem_usage=True,
         device_map={
             "unet": "cuda:0",
             "text_encoder": "cuda:1",
@@ -44,9 +45,18 @@ if torch.cuda.device_count() > 1:
 else:
     ldm_stable = StableDiffusionPipeline.from_pretrained(
         "/root/.cache/huggingface/diffusers/models--CompVis--stable-diffusion-v1-4/snapshots/133a221b8aa7292a167afc5127cb63fb5005638b",
-        scheduler=scheduler
-    ).to(device)
+        scheduler=scheduler,
+        low_cpu_mem_usage=True,
+        device_map="auto"
+    )
 
+# 内存优化：启用注意力分片和VAE分片
+ldm_stable.enable_attention_slicing()
+ldm_stable.enable_vae_slicing()
+
+# 如果有多个GPU，启用GPU分布
+if torch.cuda.device_count() > 1:
+    pass
 try:
     ldm_stable.disable_xformers_memory_efficient_attention()
 except AttributeError:
