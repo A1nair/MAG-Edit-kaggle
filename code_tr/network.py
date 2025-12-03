@@ -28,12 +28,25 @@ if torch.cuda.is_available():
     device = torch.device('cuda:0')
 else:
     device = torch.device('cpu')
-    
-ldm_stable = StableDiffusionPipeline.from_pretrained("/root/.cache/huggingface/diffusers/models--CompVis--stable-diffusion-v1-4/snapshots/133a221b8aa7292a167afc5127cb63fb5005638b", scheduler=scheduler, low_cpu_mem_usage=True, device_map="auto")
 
-# 如果有多个GPU，启用GPU分布
+# 多卡支持：使用 device_map 分配到多个GPU
 if torch.cuda.device_count() > 1:
-    pass
+    ldm_stable = StableDiffusionPipeline.from_pretrained(
+        "/root/.cache/huggingface/diffusers/models--CompVis--stable-diffusion-v1-4/snapshots/133a221b8aa7292a167afc5127cb63fb5005638b",
+        scheduler=scheduler,
+        device_map={
+            "unet": "cuda:0",
+            "text_encoder": "cuda:1",
+            "vae": "cuda:0",
+            "safety_checker": "cuda:1"
+        }
+    )
+else:
+    ldm_stable = StableDiffusionPipeline.from_pretrained(
+        "/root/.cache/huggingface/diffusers/models--CompVis--stable-diffusion-v1-4/snapshots/133a221b8aa7292a167afc5127cb63fb5005638b",
+        scheduler=scheduler
+    ).to(device)
+
 try:
     ldm_stable.disable_xformers_memory_efficient_attention()
 except AttributeError:
