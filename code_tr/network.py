@@ -36,15 +36,15 @@ if torch.cuda.device_count() > 1:
         scheduler=scheduler,
         low_cpu_mem_usage=True
     )
-    # 手动分配到不同GPU - UNet最大，放cuda:1；其他放cuda:0
+    # 分配策略: cuda:0 - text_encoder; cuda:1 - UNet + VAE (主计算设备)
     ldm_stable.text_encoder = ldm_stable.text_encoder.to("cuda:0")
-    ldm_stable.vae = ldm_stable.vae.to("cuda:0")
     ldm_stable.unet = ldm_stable.unet.to("cuda:1")
+    ldm_stable.vae = ldm_stable.vae.to("cuda:1")
     if ldm_stable.safety_checker is not None:
         ldm_stable.safety_checker = ldm_stable.safety_checker.to("cuda:0")
     # 启用UNet梯度检查点减少显存
     ldm_stable.unet.enable_gradient_checkpointing()
-    device = torch.device('cuda:0')  # 主设备
+    device = torch.device('cuda:1')  # 主计算设备
 else:
     ldm_stable = StableDiffusionPipeline.from_pretrained(
         "/root/.cache/huggingface/diffusers/models--CompVis--stable-diffusion-v1-4/snapshots/133a221b8aa7292a167afc5127cb63fb5005638b",
@@ -706,15 +706,22 @@ class NullInversion:
         return image_rec, ddim_latents
 
     def null_optimization(self, latents, num_inner_steps, epsilon):
+        # 获取UNet所在设备，所有计算在此设备上进行
+        unet_device = next(self.model.unet.parameters()).device
+        
         uncond_embeddings, cond_embeddings = self.context.chunk(2)
+        # 移动到UNet设备
+        uncond_embeddings = uncond_embeddings.to(unet_device)
+        cond_embeddings = cond_embeddings.to(unet_device)
+        
         uncond_embeddings_list = []
-        latent_cur = latents[-1]
+        latent_cur = latents[-1].to(unet_device)
         bar = tqdm(total=num_inner_steps * NUM_DDIM_STEPS)
         for i in range(NUM_DDIM_STEPS):
             uncond_embeddings = uncond_embeddings.clone().detach()
             uncond_embeddings.requires_grad = True
             optimizer = Adam([uncond_embeddings], lr=1e-2 * (1. - i / 100.))
-            latent_prev = latents[len(latents) - i - 2]
+            latent_prev = latents[len(latents) - i - 2].to(unet_device)
             t = self.model.scheduler.timesteps[i]
             with torch.no_grad():
                 noise_pred_cond = self.get_noise_pred_single(latent_cur, t, cond_embeddings)
